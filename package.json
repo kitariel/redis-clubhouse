@@ -1,0 +1,39 @@
+{
+  "name": "termscope",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "bin": {
+    "termscope": "bin/termscope.mjs"
+  },
+  "scripts": {
+    "dev": "vite",
+    "preview": "vite preview",
+    "build": "npm run check && npm run build:cli && vite build",
+    "build:cli": "esbuild src/terminal/cli.tsx --bundle --platform=node --format=esm --packages=external --outfile=build/cli.mjs",
+    "check": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "termscope": "tsx src/terminal/cli.tsx",
+    "test:e2e": "node tests/e2e.mjs"
+  },
+  "dependencies": {
+    "ink": "^5.2.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "esbuild": "^0.25.12",
+    "fake-indexeddb": "^6.2.4",
+    "playwright": "^1.56.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  }
+}

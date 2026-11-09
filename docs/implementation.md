@@ -1,0 +1,5 @@
+# TermScope implementation plan
+
+1. **Workflow** — Capture from open database handles using a read-only transaction per database. Import the same versioned JSON into either interface. Compare stores within an origin using their database and store names. Only compare key sets when both previews are complete.
+2. **UX** — Start on the overview. Keep the active capture and source visible. Use the tree to move into a store, inspect keys and indexes, chart counts, or select a comparison pair. Expose the same underlying controls in a responsive browser interface and an Ink terminal workspace. In REST mode, browse requests, run from the terminal, and use raw, table, and chart views.
+3. **Implementation** — Keep the snapshot schema, capture, store comparison, and table/chart preparation in `src/core`. Keep network execution in `src/terminal` and bundle static fixtures in the browser. Verify capture in a real browser, both imports, key comparison coverage, and terminal REST against a local test server. Ship a relative-base static build and an npm CLI entry point.

@@ -1,0 +1,7 @@
+### Sales
+GET /sales
+Accept: application/json
+
+### Sales by region
+GET /regions
+Accept: application/json
