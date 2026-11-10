@@ -15,6 +15,8 @@ from tempfile import TemporaryDirectory
 
 CSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 DOWN = b'\x1b[B'
+RIGHT = b'\x1b[C'
+LEFT = b'\x1b[D'
 UP = b'\x1b[A'
 ENTER = b'\r'
 ESC = b'\x1b'
@@ -73,7 +75,7 @@ class Terminal:
             clean = CSI.sub('', re.sub(r'\x1b\[(?:2J|3J|H)', '\n', decoded))
             frames = re.split(r'(?m)^ Redis Clubhouse(?=  \|)', clean)
             current = frames[-1]
-            if re.search(r'(?m)^ (?:↑↓|Live samples|Chart history)[^\n]+r refresh[^\n]*(?:\n|$)', current) and all(part in current for part in parts):
+            if re.search(r'(?m)^ (?:↑↓|←/→|Live samples|Chart history)[^\n]+r refresh[^\n]*(?:\n|$)', current) and all(part in current for part in parts):
                 return current
             if select.select([self.master], [], [], .1)[0]:
                 try:
@@ -124,10 +126,17 @@ with local_redis() as (port, redis):
     assert redis('-n', '1', 'SET', 'shared', '{"database":1}', 'EX', '300').stdout == b'OK\n'
     assert redis('-n', '1', 'SET', 'extra', 'value-in-db1').stdout == b'OK\n'
     with Terminal(['localhost:' + port], 110, 32) as term:
-        term.expect('Memory used', 'Commands/s', 'db0 *', 'db1', 'Redis memory', 'Connected')
+        term.expect('Memory used', 'Commands/s', 'db0 *', 'db1', 'Redis memory', 'Connected · read-only')
         term.send(b'3')
-        chart = term.expect('Redis memory', 'Commands per second', '2 samples')
-        assert re.search(r'[\u2801-\u28ff]', chart), chart
+        term.expect('[3 Charts]')
+        redis('MGET', *(['shared'] * 32), *(['missing'] * 12))
+        chart = term.expect('Redis memory', 'Commands per second', 'Cache lookups per second',
+                            'Keyspace counts', 'Hits/s', 'Misses/s', '2 samples')
+        assert re.search(r'[\u2801-\u28ff]{6,}', chart), chart
+        assert re.search(r'Hits/s [1-9]\d*(?:\.\d+)?', chart), chart
+        assert re.search(r'Misses/s [1-9]\d*(?:\.\d+)?', chart), chart
+        assert re.search(r'└─{6,}', chart), chart
+        assert re.search(r'\d{2}:\d{2}:\d{2} +\d{2}:\d{2}:\d{2}', chart), chart
         term.send(b'1', DOWN, ENTER)
         term.expect('db1  /  Key explorer', 'Key', 'Type', 'TTL', 'shared', 'extra', 'string')
         term.send(b'/', b'shared', ENTER)
@@ -150,8 +159,13 @@ with local_redis() as (port, redis):
         term.send(ESC)
         term.expect('db0  /  Key explorer', 'shared')
         term.send(b'3')
-        chart = term.expect('Redis memory', 'Commands per second', '| ')
-        assert '*' in chart, chart
+        chart = term.expect('Redis memory', 'Commands per second', 'chart page 1/2')
+        assert '* Used' in chart and '+------' in chart, chart
+        term.send(RIGHT)
+        chart = term.expect('Cache lookups per second', 'Keyspace counts', 'chart page 2/2')
+        assert '* Hits/s' in chart and '+ Misses/s' in chart, chart
+        term.send(LEFT)
+        term.expect('Redis memory', 'chart page 1/2')
 
     assert redis('ACL', 'SETUSER', 'clubviewer', 'on', '>test-viewer-password', '~*',
                  '+scan', '+type', '+ttl').stdout == b'OK\n'

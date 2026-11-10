@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { databaseRows, parseRedisInfo, ttlText } from '../src/terminal/redis-metrics'
-import { dotPlot } from '../src/terminal/dot-plot'
 
 test('reads live Redis metrics and distinguishes empty databases from unavailable key counts', () => {
   const stats = parseRedisInfo('# Memory\r\nused_memory:1048576\r\nmaxmemory:0\r\n# Stats\r\ninstantaneous_ops_per_sec:12\r\n# Keyspace\r\ndb0:keys=8,expires=3,avg_ttl=1000\r\ndb2:keys=2,expires=0,avg_ttl=0\r\n', 1234)
@@ -18,13 +17,6 @@ test('reads live Redis metrics and distinguishes empty databases from unavailabl
     { index: 0, keys: undefined, expires: undefined },
     { index: 7, keys: undefined, expires: undefined },
   ])
-})
-
-test('plots sampled points with Unicode dots and skips missing samples', () => {
-  const [top, bottom] = dotPlot([0, undefined, 8], 4, 2)
-  assert.equal(top, '   ⠈')
-  assert.equal(bottom, '⡀   ')
-  assert.deepEqual(dotPlot([0, undefined, 8], 4, 2, true), ['   *', '*   '])
 })
 
 test('counts down expiring keys while preserving Redis missing and persistent states', () => {

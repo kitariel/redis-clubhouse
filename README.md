@@ -1,6 +1,6 @@
 # Redis Clubhouse
 
-A keyboard-first terminal dashboard for Redis. Connect by hostname or IP, browse logical databases such as `db0` and `db1`, inspect keys and values, and watch memory and command traffic in live dot charts.
+A keyboard-first terminal dashboard for Redis. Connect by hostname or IP, browse logical databases such as `db0` and `db1`, inspect keys and values, and watch memory and command traffic in live time-series charts.
 
 ## Quick start
 
@@ -25,7 +25,9 @@ Use `rediss://cache.example.com:6380/2` for TLS with `db2` selected. Redis Clubh
 | --- | --- |
 | **1 Overview** | Server memory, keys, commands per second, and clients. The database grid shows key counts, expiring keys, and a dot bar for each database. |
 | **2 Keys** | A key, type, and TTL grid for the selected database. Open a row for a value preview. |
-| **3 Charts** | A rolling history of up to 60 samples, collected every two seconds while connected. Memory is allocator usage from Redis. Commands per second is the server-reported rate. |
+| **3 Charts** | Connected plots with value and time axes. View Redis memory, commands per second, cache hits and misses per second, and total versus expiring keys. |
+
+Charts use up to 60 live samples taken every two seconds while connected. Green marks memory and cache hits, orange marks commands and expiring keys, red marks misses, and blue marks total keys. Each legend shows the latest reading. Cache rates use the change in Redis counters between samples. Overlapping lines share a light trace. On a smaller terminal, press ←/→ to switch chart pages.
 
 The inspector connects to one standalone Redis server and uses read-only data commands. The database grid uses `INFO` and, where permitted, `CONFIG GET databases` to include the first 256 configured indexes, including empty ones. Higher indexes appear when Redis reports keys in them or when you open them directly. If discovery is restricted, press `d` to enter a database index directly. Restricted metrics and metadata appear as unavailable. String previews read up to 4 KiB, and collections show up to 10 items. Hash previews use Redis 6.2 or later.
 
@@ -38,6 +40,7 @@ The inspector connects to one standalone Redis server and uses read-only data co
 | Enter | Open the selected database or inspect a key |
 | d | Jump to a database index |
 | / | Filter keys using a Redis glob, such as `session:*`. Submit an empty filter to clear it. |
+| ← / → | Switch chart pages on smaller terminals |
 | n / p | Move to the next or previous scan batch |
 | Tab | Switch between the key grid and value pane |
 | r | Refresh the current keys and server metrics |

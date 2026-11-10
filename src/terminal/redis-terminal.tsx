@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Text, useApp, useInput, useStdout } from 'ink'
-import { Charts, Dashboard } from './dashboard'
+import { Dashboard } from './dashboard'
+import { Charts, chartsPerPage } from './charts'
 import { KeyGrid, KeyPreview } from './key-grid'
 import { clampIndex, gold, mint, Panel, quiet, red, safeLine, windowStart, wrapPreview } from './rendering'
 import { createRedisSession, redisError, RedisAuthError, type RedisKeyMetadata, type RedisPage, type RedisPreview, type RedisTarget } from './redis-client'
@@ -17,6 +18,7 @@ export function RedisTerminal({ target, ascii }: { target: RedisTarget; ascii: b
   const { stdout } = useStdout()
   const [size, setSize] = useState(() => ({ width: stdout.columns || 80, height: stdout.rows || 24 }))
   const [view, setView] = useState<View>('Overview')
+  const [chartPage, setChartPage] = useState(0)
   const [database, setDatabase] = useState(target.database)
   const activeDb = useRef(target.database)
   const [dbFocus, setDbFocus] = useState(target.database)
@@ -143,6 +145,8 @@ export function RedisTerminal({ target, ascii }: { target: RedisTarget; ascii: b
 
   const width = size.width
   const height = Math.max(11, size.height - 4)
+  const chartPages = 4 / chartsPerPage(width, height)
+  const activeChartPage = clampIndex(chartPage, chartPages)
   const wide = width >= 104
   const keysWidth = wide ? Math.floor(width * .58) : width
   const detailWidth = wide ? width - keysWidth : width
@@ -215,7 +219,10 @@ export function RedisTerminal({ target, ascii }: { target: RedisTarget; ascii: b
       if (key.return) load('', ['0'], { db: databases[dbIndex].index })
       return
     }
-    if (view !== 'Keys') return
+    if (view === 'Charts') {
+      if (key.leftArrow || key.rightArrow) setChartPage(clampIndex(activeChartPage + (key.leftArrow ? -1 : 1), chartPages))
+      return
+    }
     if (key.escape) { setPane('keys'); setPreview(undefined); return }
     if (key.tab && (wide || preview)) { setPane(pane === 'keys' ? 'value' : 'keys'); return }
     if (input === '/') { setPane('keys'); setDraft({ kind: 'filter', value: '' }); return }
@@ -238,7 +245,9 @@ export function RedisTerminal({ target, ascii }: { target: RedisTarget; ascii: b
   const displayedDraft = draft?.kind === 'password' ? '*'.repeat(Math.min(draft.value.length, 24)) : safeLine(draft?.value ?? '')
   const status = error || (busy ? 'Reading Redis…' : ready ? 'Connected · read-only' : 'Disconnected · r retries')
   const shortcuts = view === 'Overview' ? '↑↓ select DB · Enter opens keys · d jump' :
-    view === 'Keys' ? '↑↓ move · Enter inspect · / filter · n/p batches · Tab pane' : ready ? 'Live samples every 2s · newest at right' : 'Chart history · disconnected'
+    view === 'Keys' ? '↑↓ move · Enter inspect · / filter · n/p batches · Tab pane' :
+      (chartPages > 1 ? '←/→ chart page ' + (activeChartPage + 1) + '/' + chartPages + ' · ' : '') +
+      (ready ? 'Live samples every 2s' : 'Chart history · disconnected')
   return <Box width={width} flexDirection="column">
     <Box height={1} paddingX={1}><Text color={quiet} wrap="truncate-end">
       <Text color={mint} bold>Redis Clubhouse</Text>  |  {target.label.replace(/\/\d+$/, '')}  |  db{database}
@@ -255,6 +264,7 @@ export function RedisTerminal({ target, ascii }: { target: RedisTarget; ascii: b
         <Text>1 Overview · 2 Keys · 3 Charts</Text>
         <Text>↑↓ navigate · Enter open database or key · d jump to database</Text>
         <Text>/ search keys by glob · n/p batches · Tab switch key panes</Text>
+        <Text>←/→ switch chart pages on smaller terminals</Text>
         <Text>r refresh · Esc back or cancel · q quit</Text>
       </> : <>
         <Text color={mint} bold>{draft?.kind === 'password' ? 'Redis authentication' : 'Open database index'}</Text>
@@ -264,7 +274,7 @@ export function RedisTerminal({ target, ascii }: { target: RedisTarget; ascii: b
         <Text color={quiet}>Enter confirm · Esc cancel</Text>
       </>}
     </Panel> : view === 'Overview' ? <Dashboard {...{ width, height, ascii, samples, databases, configured }}
-      selected={dbIndex} active={database} /> : view === 'Charts' ? <Charts {...{ width, height, ascii, samples }} /> :
+      selected={dbIndex} active={database} /> : view === 'Charts' ? <Charts {...{ width, height, ascii, samples }} page={activeChartPage} /> :
       <Box>
         {keyGridVisible && <KeyGrid width={keysWidth} {...{ height, ascii, database, page, pattern, index, start, metadata, busy, now }}
           filter={draft?.kind === 'filter' ? draft.value : undefined} batch={cursors.length} rows={keyRows} focused={pane === 'keys'} />}

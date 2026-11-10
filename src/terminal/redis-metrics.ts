@@ -5,6 +5,9 @@ export type RedisMetrics = {
   maxMemory?: number
   ops?: number
   clients?: number
+  hits?: number
+  misses?: number
+  runId?: string
   version?: string
   keyspace?: Map<number, RedisDatabase>
 }
@@ -38,9 +41,35 @@ export function parseRedisInfo(info: string, at = Date.now()): RedisMetrics {
   return {
     at, memory: count(fields.get('used_memory')), maxMemory: count(fields.get('maxmemory')),
     ops: count(fields.get('instantaneous_ops_per_sec')), clients: count(fields.get('connected_clients')),
-    version: fields.get('redis_version'),
+    version: fields.get('redis_version'), runId: fields.get('run_id'),
+    hits: count(fields.get('keyspace_hits')), misses: count(fields.get('keyspace_misses')),
     keyspace: keyspaceAvailable || databases.size ? databases : undefined,
   }
+}
+
+export const maxSampleGap = 6000
+
+export function cacheRates(before: RedisMetrics | undefined, after: RedisMetrics): [number | undefined, number | undefined] {
+  if (!before) return [undefined, undefined]
+  const elapsed = after.at - before.at
+  if (elapsed <= 0 || elapsed > maxSampleGap || (before.runId && after.runId && before.runId !== after.runId)) {
+    return [undefined, undefined]
+  }
+  function rate(previous: number | undefined, current: number | undefined) {
+    return previous === undefined || current === undefined || current < previous ? undefined : (current - previous) * 1000 / elapsed
+  }
+  return [rate(before.hits, after.hits), rate(before.misses, after.misses)]
+}
+
+export function keyCounts(stats: RedisMetrics | undefined): [number | undefined, number | undefined] {
+  if (!stats?.keyspace) return [undefined, undefined]
+  let keys = 0
+  let expires: number | undefined = 0
+  for (const database of stats.keyspace.values()) {
+    keys += database.keys ?? 0
+    expires = expires === undefined || database.expires === undefined ? undefined : expires + database.expires
+  }
+  return [keys, expires]
 }
 
 export function databaseRows(stats: RedisMetrics | undefined, configured: number | undefined, active: number): RedisDatabase[] {
