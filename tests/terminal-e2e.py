@@ -7,10 +7,11 @@ import re
 import select
 import struct
 import subprocess
-import sys
 import termios
 import time
-from pathlib import Path
+from contextlib import contextmanager
+from socket import socket
+from tempfile import TemporaryDirectory
 
 CSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 DOWN = b'\x1b[B'
@@ -24,7 +25,7 @@ class Terminal:
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
         self.process = subprocess.Popen(
-            ['node', 'bin/termscope.mjs', *arguments],
+            ['node', 'bin/redis-clubhouse.mjs', *arguments],
             stdin=slave, stdout=slave, stderr=slave,
             env={**os.environ, 'TERM': 'xterm-256color', 'CI': 'false'},
         )
@@ -68,10 +69,11 @@ class Terminal:
     def expect(self, *parts):
         until = time.monotonic() + 5
         while time.monotonic() < until:
-            clean = CSI.sub('', self.output.decode('utf-8', errors='replace'))
-            frames = re.split(r'(?m)^ TermScope', clean)
+            decoded = self.output.decode('utf-8', errors='replace')
+            clean = CSI.sub('', re.sub(r'\x1b\[(?:2J|3J|H)', '\n', decoded))
+            frames = re.split(r'(?m)^ Redis Clubhouse(?=  \|)', clean)
             current = frames[-1]
-            if re.search(r'(?m)^ Tab [^\n]+\n', current) and all(part in current for part in parts):
+            if re.search(r'(?m)^ (?:↑↓|Live samples|Chart history)[^\n]+r refresh[^\n]*(?:\n|$)', current) and all(part in current for part in parts):
                 return current
             if select.select([self.master], [], [], .1)[0]:
                 try:
@@ -83,44 +85,100 @@ class Terminal:
         raise AssertionError(f'Missing {parts!r} in current terminal frame:\n{current}')
 
 
-before, after, partial, base_url = sys.argv[1:]
-with Terminal(['inspect', before, after], 80, 24) as term:
-    term.expect('DATABASE EXPLORER', 'sync_queue')
-    term.send(b'\t')
-    term.expect('Overview', 'Records')
-    term.send(b'c')
-    term.expect('Comparison', 'sync_queue', '-18')
-    term.send(b'/', b'sync_queue', ENTER)
-    term.send(ENTER)
-    term.expect('Removed keys (18)', 'txn-sync-001')
-    term.send(ESC, b'\t')
-    term.expect('DATABASE EXPLORER')
-    term.send(DOWN, DOWN, DOWN, DOWN, DOWN, ENTER)
-    term.expect('18 records', 'txn-sync-001')
-    term.send(ENTER)
-    term.expect('queued', 'transactions')
-    term.send(b'\x1b[6~', ENTER)
-    term.expect('posted', 'after.json')
+@contextmanager
+def local_redis(password=None):
+    with TemporaryDirectory(prefix='redis-clubhouse-') as directory:
+        with socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            port = str(listener.getsockname()[1])
+        args = ['redis-server', '--bind', '127.0.0.1', '--port', port,
+                '--save', '', '--appendonly', 'no', '--dir', directory]
+        if password:
+            args += ['--requirepass', password]
+        server = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            env = {**os.environ, **({'REDISCLI_AUTH': password} if password else {})}
 
-with Terminal(['inspect', partial, after], 110, 32) as term:
-    term.expect('DATABASE EXPLORER', 'Overview')
-    term.send(b'c', b'/', b'sync_queue', ENTER, ENTER)
-    term.expect('Key comparison unavailable.', '-18')
+            def command(*args):
+                return subprocess.run(['redis-cli', '-h', '127.0.0.1', '-p', port, '--raw', *args],
+                                      env=env, capture_output=True, timeout=2)
 
-with Terminal(['open', str(Path('samples/sales.http')), '--base-url', base_url, '--ascii'], 110, 32) as term:
-    term.expect('press Enter to run')
-    term.send(ENTER)
-    term.expect('HTTP 200', 'revenue')
-    term.send(b'2', b'p')
-    term.expect('Pinned chart', 'Jan', 'Feb')
-    term.send(b'/', b'East', ENTER)
-    updated = term.expect('Pinned chart', 'Jan')
-    assert 'Feb' not in updated, updated
-    term.send(b'3', DOWN)
-    term.expect('Mar', '13,100')
-    term.send(b'\t', DOWN, ENTER)
-    term.expect('Sales by region', 'HTTP 200', 'region')
-    term.send(b'\t', UP)
-    term.expect('GET Sales · HTTP 200', 'revenue')
+            for _ in range(100):
+                if command('PING').stdout == b'PONG\n':
+                    break
+                if server.poll() is not None:
+                    raise RuntimeError('The isolated test Redis server exited during startup')
+                time.sleep(.05)
+            else:
+                raise RuntimeError('The isolated test Redis server did not start')
+            yield port, command
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
 
-print('Terminal import, comparison, key detail, partial preview, and live REST chart passed')
+
+os.environ.pop('REDISCLI_AUTH', None)
+os.environ.pop('REDIS_USERNAME', None)
+with local_redis() as (port, redis):
+    assert redis('SET', 'shared', 'value-in-db0').stdout == b'OK\n'
+    assert redis('-n', '1', 'SET', 'shared', '{"database":1}', 'EX', '300').stdout == b'OK\n'
+    assert redis('-n', '1', 'SET', 'extra', 'value-in-db1').stdout == b'OK\n'
+    with Terminal(['localhost:' + port], 110, 32) as term:
+        term.expect('Memory used', 'Commands/s', 'db0 *', 'db1', 'Redis memory', 'Connected')
+        term.send(b'3')
+        chart = term.expect('Redis memory', 'Commands per second', '2 samples')
+        assert re.search(r'[\u2801-\u28ff]', chart), chart
+        term.send(b'1', DOWN, ENTER)
+        term.expect('db1  /  Key explorer', 'Key', 'Type', 'TTL', 'shared', 'extra', 'string')
+        term.send(b'/', b'shared', ENTER)
+        term.expect('Filter shared', '1 of 1 in batch')
+        term.send(ENTER)
+        term.expect('Key details', 'Type string', '"database": 1')
+        term.send(b'd', b'0', ENTER)
+        term.expect('db0  /  Key explorer', 'shared')
+        term.send(ENTER)
+        term.expect('value-in-db0', 'TTL Persistent')
+        term.send(b'd', b'99', ENTER)
+        term.expect('database index is out of range')
+    assert redis('GET', 'shared').stdout == b'value-in-db0\n'
+    assert redis('-n', '1', 'GET', 'shared').stdout == b'{"database":1}\n'
+
+    with Terminal(['127.0.0.1:' + port, '--ascii'], 80, 24) as term:
+        term.expect('Databases', 'db0', 'db1')
+        term.send(b'2', ENTER)
+        term.expect('Key details', 'value-in-db0')
+        term.send(ESC)
+        term.expect('db0  /  Key explorer', 'shared')
+        term.send(b'3')
+        chart = term.expect('Redis memory', 'Commands per second', '| ')
+        assert '*' in chart, chart
+
+    assert redis('ACL', 'SETUSER', 'clubviewer', 'on', '>test-viewer-password', '~*',
+                 '+scan', '+type', '+ttl').stdout == b'OK\n'
+    os.environ['REDIS_USERNAME'] = 'clubviewer'
+    try:
+        with Terminal(['127.0.0.1:' + port], 80, 24) as term:
+            term.expect('Redis authentication')
+            term.send(b'test-viewer-password', ENTER)
+            term.expect('Metrics unavailable', 'Connected')
+            term.send(b'2')
+            term.expect('shared', 'string', 'Persistent')
+            term.send(ENTER)
+            term.expect('Type string', 'TTL Persistent', 'Redis denied this read command.')
+    finally:
+        os.environ.pop('REDIS_USERNAME', None)
+
+with local_redis('test-only-password') as (port, redis):
+    assert redis('SET', 'private-key', 'private-value').stdout == b'OK\n'
+    with Terminal(['127.0.0.1:' + port], 80, 24) as term:
+        term.expect('Redis authentication', 'Password')
+        term.send(b'test-only-password')
+        assert 'test-only-password' not in term.expect('******************')
+        term.send(ENTER)
+        term.expect('Connected', 'Databases')
+        term.send(b'2', ENTER)
+        term.expect('private-value')
+        redis('SHUTDOWN', 'NOSAVE')
+        term.expect('Disconnected · r retries')
+
+print('Live Redis dashboard, database switching, dot charts, key grid, and authentication passed')

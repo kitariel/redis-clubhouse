@@ -5,13 +5,13 @@ import { test } from 'node:test'
 test('registers the direct Redis command and accepts a host with port', () => {
   const cli = ['--import', 'tsx', 'src/terminal/cli.tsx']
   const output = execFileSync(process.execPath, [...cli, '--help'], { encoding: 'utf8' })
-  assert.match(output, /termscope redis <host\[:port\]\|redis:\/\/url>/)
-  const result = spawnSync(process.execPath, [...cli, 'redis', 'localhost:6379'], { encoding: 'utf8' })
+  assert.match(output, /redis-clubhouse \[host\[:port\]\|redis:\/\/url\]/)
+  const result = spawnSync(process.execPath, [...cli, 'localhost:6379'], { encoding: 'utf8' })
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /Open TermScope in an interactive terminal/)
-  const badOption = spawnSync(process.execPath, [...cli, 'redis', 'localhost:6379', '--password=example-secret'], { encoding: 'utf8' })
+  assert.match(result.stderr, /Open Redis Clubhouse in an interactive terminal/)
+  const badOption = spawnSync(process.execPath, [...cli, 'localhost:6379', '--password=example-secret'], { encoding: 'utf8' })
   assert.equal(badOption.status, 1)
-  assert.match(badOption.stderr, /Unknown Redis option/)
+  assert.match(badOption.stderr, /Use redis-clubhouse <host/)
   assert.doesNotMatch(badOption.stderr, /example-secret/)
 })
 

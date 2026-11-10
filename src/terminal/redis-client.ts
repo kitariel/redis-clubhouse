@@ -1,13 +1,15 @@
 import { isUtf8 } from 'node:buffer'
 import { isIP } from 'node:net'
 import { createClient, RESP_TYPES } from '@redis/client'
+import { parseRedisInfo } from './redis-metrics'
 
 const previewBytes = 4096
 const previewItems = 10
 
 export type RedisTarget = { host: string; port: number; tls: boolean; database: number; label: string }
 export type RedisPage = { cursor: string; keys: Buffer[] }
-export type RedisPreview = { type: string; ttl: number; text: string; note?: string }
+export type RedisKeyMetadata = { type?: string; ttl?: number; at?: number }
+export type RedisPreview = RedisKeyMetadata & { text: string; note?: string }
 export class RedisAuthError extends Error {}
 
 export function parseRedisTarget(address: string): RedisTarget {
@@ -32,14 +34,29 @@ export function parseRedisTarget(address: string): RedisTarget {
   }
 }
 
-export function redisText(value: unknown): string {
+export function redisText(value: unknown, partial = false): string {
   if (Buffer.isBuffer(value)) {
     const slice = value.subarray(0, previewBytes)
-    if (!isUtf8(slice)) return '0x' + slice.subarray(0, 128).toString('hex') + (value.length > 128 ? '…' : '')
-    return JSON.stringify(slice.toString('utf8')) + (value.length > previewBytes ? '…' : '')
+    const truncated = partial || value.length > previewBytes
+    try {
+      const text = truncated ? new TextDecoder('utf-8', { fatal: true }).decode(slice, { stream: true }) : slice.toString('utf8')
+      if (truncated || isUtf8(slice)) return JSON.stringify(text) + (truncated ? '…' : '')
+    } catch { /* Binary values are shown as hexadecimal. */ }
+    return '0x' + slice.subarray(0, 128).toString('hex') + (value.length > 128 ? '…' : '')
   }
-  if (Array.isArray(value)) return '[' + value.map(redisText).join(', ') + ']'
+  if (Array.isArray(value)) return '[' + value.map(value => redisText(value)).join(', ') + ']'
   return String(value)
+}
+
+function stringPreview(value: Buffer, truncated: boolean) {
+  const text = value.toString('utf8')
+  if (!truncated && /^\s*[\[{]/.test(text) && isUtf8(value)) {
+    try {
+      const formatted = JSON.stringify(JSON.parse(text), null, 2)
+      if (formatted.length <= 16_384) return formatted
+    } catch { /* Fall through to the plain string preview. */ }
+  }
+  return redisText(value, truncated)
 }
 
 export function redisError(error: unknown) {
@@ -47,6 +64,8 @@ export function redisError(error: unknown) {
   const message = error instanceof Error ? error.message : ''
   if (/^(NOAUTH|WRONGPASS)\b/.test(message)) return 'Authentication failed. Check the password and REDIS_USERNAME.'
   if (/^NOPERM\b/.test(message)) return 'Redis denied this read command. Check the user’s ACL permissions.'
+  if (/^ERR .*DB index is out of range/i.test(message)) return 'That Redis database index is out of range.'
+  if (/^ERR .*SELECT.*cluster/i.test(message)) return 'This Redis endpoint exposes only db0.'
   if (/^WRONGTYPE\b/.test(message)) return 'The key type changed while reading it. Open the key again.'
   if (/^(MOVED|ASK)\b/.test(message)) return 'Redis redirected the command. Connect directly to the relevant Redis node.'
   if (message === 'Redis operation timed out.') return message
@@ -81,6 +100,15 @@ export function createRedisSession(target: RedisTarget, password?: string, usern
   const command = <T,>(...args: (string | Buffer)[]) =>
     deadline(client.sendCommand<T>(args, { typeMapping }), close)
 
+  async function metadata(key: Buffer): Promise<RedisKeyMetadata> {
+    const [type, ttl] = await Promise.allSettled([command<string>('TYPE', key), command<number>('TTL', key)])
+    return {
+      type: type.status === 'fulfilled' ? type.value : undefined,
+      ttl: ttl.status === 'fulfilled' ? ttl.value : undefined,
+      at: Date.now(),
+    }
+  }
+
   return {
     get ready() { return client.isReady },
     async connect() {
@@ -91,6 +119,23 @@ export function createRedisSession(target: RedisTarget, password?: string, usern
       }
     },
     close,
+    async metrics() {
+      return parseRedisInfo((await command<Buffer>('INFO')).toString('utf8'))
+    },
+    async databaseCount() {
+      try {
+        const [, value] = await command<Buffer[]>('CONFIG', 'GET', 'databases')
+        const count = Number(value?.toString())
+        return Number.isSafeInteger(count) && count > 0 ? count : undefined
+      } catch (error) {
+        if (client.isReady && error instanceof Error && /^(NOPERM|ERR)\b/.test(error.message)) return undefined
+        throw error
+      }
+    },
+    async select(index: number) {
+      await command('SELECT', String(index))
+    },
+    metadata,
     async scan(cursor: string, pattern: string): Promise<RedisPage> {
       try {
         // Sparse MATCH patterns can produce several empty batches while the cursor is still open.
@@ -108,33 +153,42 @@ export function createRedisSession(target: RedisTarget, password?: string, usern
       }
     },
     async inspect(key: Buffer): Promise<RedisPreview> {
-      const [type, ttl] = await Promise.all([command<string>('TYPE', key), command<number>('TTL', key)])
+      const details = await metadata(key)
+      const { type, ttl } = details
       if (type === 'none' || ttl === -2) return { type: 'none', ttl: -2, text: 'The key no longer exists.' }
-      if (type === 'string') {
-        const [length, value] = await Promise.all([
-          command<number>('STRLEN', key), command<Buffer>('GETRANGE', key, '0', String(previewBytes - 1)),
-        ])
-        return {
-          type, ttl, text: redisText(value),
-          note: length > previewBytes ? 'First 4,096 of ' + length.toLocaleString('en-US') + ' bytes' : length + ' bytes',
+      if (!type) return { ...details, text: 'Key type unavailable. Check the Redis TYPE permission.' }
+      try {
+        if (type === 'string') {
+          const [length, value] = await Promise.all([
+            command<number>('STRLEN', key), command<Buffer>('GETRANGE', key, '0', String(previewBytes - 1)),
+          ])
+          return {
+            ...details, text: stringPreview(value, length > previewBytes),
+            note: length > previewBytes ? 'First 4,096 of ' + length.toLocaleString('en-US') + ' bytes' : length + ' bytes',
+          }
         }
-      }
 
-      const count = String(previewItems)
-      const commands: Record<string, string[]> = {
-        list: ['LRANGE', '0', String(previewItems - 1)],
-        hash: ['HRANDFIELD', count, 'WITHVALUES'],
-        set: ['SRANDMEMBER', count],
-        zset: ['ZRANGE', '0', String(previewItems - 1), 'WITHSCORES'],
-        stream: ['XRANGE', '-', '+', 'COUNT', count],
+        const count = String(previewItems)
+        const commands: Record<string, string[]> = {
+          list: ['LRANGE', '0', String(previewItems - 1)],
+          hash: ['HRANDFIELD', count, 'WITHVALUES'],
+          set: ['SRANDMEMBER', count],
+          zset: ['ZRANGE', '0', String(previewItems - 1), 'WITHSCORES'],
+          stream: ['XRANGE', '-', '+', 'COUNT', count],
+        }
+        if (!Object.hasOwn(commands, type)) return { ...details, text: 'Value preview unavailable for this key type.' }
+        const [name, ...args] = commands[type]
+        const values = await command<unknown[] | null>(name, key, ...args) ?? []
+        const pairs = type === 'hash' || type === 'zset'
+        const lines = pairs ? Array.from({ length: Math.floor(values.length / 2) }, (_, i) =>
+          redisText(values[2 * i]) + ' → ' + redisText(values[2 * i + 1])) : values.map(value => redisText(value))
+        return { ...details, text: lines.join('\n') || 'Empty preview.', note: 'Preview of up to ' + count + ' items' }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ''
+        if (/^NOPERM\b/.test(message)) return { ...details, text: redisError(error) }
+        if (/^ERR unknown command\b/.test(message)) return { ...details, text: 'Preview unavailable on this Redis version.' }
+        throw error
       }
-      if (!Object.hasOwn(commands, type)) return { type, ttl, text: 'Value preview unavailable for this key type.' }
-      const [name, ...args] = commands[type]
-      const values = await command<unknown[] | null>(name, key, ...args) ?? []
-      const pairs = type === 'hash' || type === 'zset'
-      const lines = pairs ? Array.from({ length: Math.floor(values.length / 2) }, (_, i) =>
-        redisText(values[2 * i]) + ' → ' + redisText(values[2 * i + 1])) : values.map(redisText)
-      return { type, ttl, text: lines.join('\n') || 'Empty preview.', note: 'Preview of up to ' + count + ' items' }
     },
   }
 }
