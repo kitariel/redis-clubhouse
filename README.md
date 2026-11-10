@@ -1,6 +1,6 @@
 # TermScope
 
-TermScope is a keyboard-first inspector for IndexedDB snapshots and REST responses. It runs in a terminal with React and Ink, and as a static React demo. Both interfaces use the same snapshot format and data processing.
+TermScope is a keyboard-first terminal inspector for Redis, IndexedDB snapshots, and REST responses. Connect directly to a Redis server to browse keys, types, TTLs, and value previews. The static browser demo supports IndexedDB snapshots and bundled REST examples.
 
 ## Run it locally
 
@@ -12,16 +12,28 @@ cd redis-clubhouse
 npm ci
 npm run build
 npm link
+termscope redis localhost:6379
+```
+
+Replace `localhost:6379` with the hostname or IP of a reachable Redis server. The default port is 6379. The Redis view uses read-only commands and works with a standalone Redis server. For TLS and database selection, use a URL such as `rediss://cache.example.com:6380/2`.
+
+Press ↑/↓ to choose a key, Enter to open its details, and Esc to return to the key list. Press `/` to search the selected database with a Redis glob such as `session:*`, `n` or `p` to move between batches, and `r` to refresh. Press `?` for help. String previews read up to 4 KiB, and collection previews show up to 10 items. Hash previews use Redis 6.2 or later.
+
+If the server requires authentication, TermScope prompts for a password. You can also set `REDISCLI_AUTH` in your local environment, and use `REDIS_USERNAME` for a named ACL user.
+
+You can also invoke `./bin/termscope.mjs redis localhost:6379` after building. Append `--ascii` for ASCII borders and chart marks.
+
+## IndexedDB and REST
+
+```sh
 termscope demo
 termscope inspect samples/before.json samples/after.json
 termscope open samples/sales.http --base-url http://localhost:3000
 ```
 
-You can also invoke `./bin/termscope.mjs` after building, or use `npm run termscope -- demo` during development. Append `--ascii` for ASCII borders and chart marks.
-
 Run `npm run preview` and open the local URL to see the production browser build. Use `npm run dev` while editing the browser app. The browser starts with the sample IndexedDB overview and includes bundled sales responses under **REST**.
 
-## Capture from your app
+## Capture IndexedDB from your app
 
 Build TermScope, then copy the standalone `dist/capture.mjs` into your app’s development assets. Import it from the app that already has open database handles. The helper uses one read-only transaction per database and never opens, upgrades, or closes the supplied handles.
 
