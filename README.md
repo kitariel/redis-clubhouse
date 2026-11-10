@@ -7,6 +7,8 @@ TermScope is a keyboard-first inspector for IndexedDB snapshots and REST respons
 Use Node.js 20.19+ and npm.
 
 ```sh
+git clone https://github.com/kitariel/redis-clubhouse.git
+cd redis-clubhouse
 npm ci
 npm run build
 npm link
